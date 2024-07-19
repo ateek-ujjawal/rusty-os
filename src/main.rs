@@ -1,7 +1,10 @@
 #![no_main]
 #![no_std]
 
-use core::{panic::PanicInfo, arch::asm};
+use core::{panic::PanicInfo, arch::asm, arch::global_asm};
+
+global_asm!(include_str!("asm/boot.S"));
+global_asm!(include_str!("asm/trap.S"));
 
 #[macro_export]
 macro_rules! print
@@ -27,7 +30,7 @@ macro_rules! println
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     print!("Aborting: ");
-	if let Some(p) = info.location() {
+	if let Some(_p) = info.location() {
 		println!(
 					"line {}, file {}: {}",
 					p.line(),

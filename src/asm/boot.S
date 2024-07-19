@@ -2,7 +2,7 @@
 
 .option norvc
 .section .data
-
+.equ  CONSTANT, 0xdeadbead
 .section .text.init
 .global _start
 
@@ -32,8 +32,9 @@ bgeu a0, a1, 2f
 
 # Control registers, set stack pointer, mstatus, mepc, mtvec, mie registers
 # and return to main function
-la  sp, _stack
+la  sp, _stack_start
 
+li a6, CONSTANT
 # Set bits 11 and 12 to 11(machine mode), set bits 7 and 3 to enable interrupts
 li  t0, (0b11) << 11 | (1 << 7) | (1 << 3)
 csrw mstatus, t0
