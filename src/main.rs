@@ -5,6 +5,7 @@ use core::{arch::{asm, global_asm}, panic::PanicInfo};
 
 global_asm!(include_str!("asm/boot.S"));
 global_asm!(include_str!("asm/trap.S"));
+global_asm!(include_str!("asm/mem.S"));
 
 // Since the default print! macro prints to stdout, we need to make our own
 // To print write to the UART
