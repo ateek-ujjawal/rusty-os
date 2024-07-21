@@ -79,7 +79,7 @@ pub fn init() {
 
 		// Align ALLOC_START after the page structure table
 		// to the order of PAGE_SIZE(4096 bytes)
-		ALLOC_START = align_val(HEAP_START + num_pages * size_of::<Page>(), PAGE_SIZE);
+		ALLOC_START = align_val(HEAP_START + num_pages * size_of::<Page>(), PAGE_ORDER);
 	}
 }
 

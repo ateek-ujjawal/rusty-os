@@ -73,16 +73,21 @@ fn kmain() {
 	// ready to start scheduling. The last thing this
 	// should do is start the timer.
 
+	println!("Welcome to Rusty OS!");
+
 	// Print to UART
 	let mut my_uart = uart::Uart::new(0x1000_0000);
 	my_uart.init();
 
+	// Allocate some pages
 	page::init();
-	let page_ptr = page::alloc(32);
+	let _ = page::zalloc(32);
+	let _ = page::zalloc(1);
+	let ptr = page::zalloc(1);
+	page::dealloc(ptr);
 	page::print_page_allocations();
 
-	println!("Write to OS succeeded!");
-	println!("Now we can write something");
+	println!("Write something here!");
 
 	// Test if uart reading works
 	// Read user input from UART and write it to UART as well
