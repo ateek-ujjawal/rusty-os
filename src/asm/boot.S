@@ -2,7 +2,7 @@
 
 .option norvc
 .section .data
-.equ  CONSTANT, 0xdeadbead
+
 .section .text.init
 .global _start
 
@@ -37,7 +37,6 @@ bgeu a0, a1, 2f
 # Stack grows from bottom to top, so start from _stack_end
 la  sp, _stack_end
 
-li a6, CONSTANT
 # Set bits 11 and 12 to 11(machine mode), set bits 7(MPIE: Machine previous interrupt enable) to 1 and 3(MIE: Machine's interrupt enable) to 1 to enable interrupts
 li  t0, (0b11) << 11 | (1 << 7) | (1 << 3)
 csrw mstatus, t0
