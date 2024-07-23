@@ -389,3 +389,42 @@ pub fn unmap(root: &mut Table) {
 		}
 	}
 }
+
+// Walk through the page table by given virtual address
+pub fn virt_to_phys(root: &mut Table, vaddr: usize) -> Option<usize> {
+	// Get virtual page numbers to walk through
+	let vpn = [
+		(vaddr >> 12) & 0x1ff,
+		(vaddr >> 21) & 0x1ff,
+		(vaddr >> 30) & 0x1ff
+	];
+
+	let mut v = &root.entries[vpn[2]];
+	for i in (0..=2).rev() {
+		if v.is_invalid() {
+			// Found an invalid page table entry, page fault
+			break;
+		}
+
+		if v.is_leaf() {
+			// Found a leaf entry, return the physical address
+			// masked with virtual address offset + level
+			// For example: if leaf is found at level 2, we start at bit 12(masking the offset)
+			// then add 2 * 9 to mask the 12 + 18 = 30 bits of physical page number
+			let off_mask = (1 << (12 + i * 9)) - 1; // offset + level mask
+			let vaddr_pgoff = vaddr & off_mask;	   // Get the required offset + level mask from virtual address
+			let addr = ((v.get_entry() << 2) as usize) & !off_mask;	// Get rid of physical address offset + level mask
+			return Some(addr | vaddr_pgoff);	// Return the physical address after setting the virtual address offset + required level page numbers
+												// From virtual address
+		}
+
+		let entry = ((v.get_entry() & !0x3ff) << 2) as *mut Entry;		// Get physical address of next page table
+
+		// We should get None or Some before we get here when i = 0 and vpn[-1] is reached
+		v = unsafe { entry.add(vpn[i-1]).as_ref().unwrap() };
+
+	}
+
+	// No matching leaves were found for this virtual address, return None
+	None
+}
