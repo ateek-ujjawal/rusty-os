@@ -93,7 +93,7 @@ pub fn kmalloc(sz: usize) -> *mut u8 {
 
         // Get the head and tail of the kernel memory
         let mut head = KMEM_HEAD;
-        let tail = (head as *mut u8).add((*head).get_size()) as *mut AllocList;
+        let tail = (head as *mut u8).add(KMEM_ALLOC * PAGE_SIZE) as *mut AllocList;
 
         while head < tail {
             // If free head/chunk is found, allocate it
@@ -136,4 +136,60 @@ pub fn kzmalloc(sz: usize) -> *mut u8 {
         }
     }
     ret
+}
+
+// Coalesce small freed memory chunks into bigger chunks to reduce fragmentation
+pub fn coalesce() {
+    unsafe {
+        let mut head = KMEM_HEAD;
+        let tail = (head as *mut u8).add(KMEM_ALLOC * PAGE_SIZE) as *mut AllocList;
+
+        while head < tail {
+            let next = (head as *mut u8).add((*head).get_size()) as *mut AllocList;
+            if (*head).get_size() == 0 {
+                // Error, size can never be zero, heap must be messed up
+                // Break out of the loop
+                break;
+            } else if next >= tail {
+                // We might have moved past the tail
+                // In this case size is wrong
+                // Break out of the loop
+                break;
+            } else if (*head).is_free() && (*next).is_free() {
+                // Found adjacent free blocks of memory
+                // Coalesce them into one
+                (*head).set_size((*head).get_size() + (*next).get_size());
+            }
+            // Check for other free blocks by moving the head
+            head = (head as *mut u8).add((*head).get_size()) as *mut AllocList;
+        }
+    }
+}
+
+// Free the memory block pointed by this ptr
+pub fn kfree(ptr: *mut u8) {
+    unsafe {
+        if !ptr.is_null() {
+            let p = (ptr as *mut AllocList).offset(-1);
+            if (*p).is_taken() {
+                (*p).set_free();
+            }
+
+            // After freeing the AllocList, check for adjacent free blocks
+            // and coalesce the memory
+            coalesce();
+        }
+    }
+}
+
+// Print the kernel memory space
+pub fn print_kmem() {
+    unsafe {
+        let mut head = KMEM_HEAD;
+        let tail = (head as *mut u8).add(KMEM_ALLOC * PAGE_SIZE) as *mut AllocList;
+        while head < tail {
+            println!("{:p}: Length = {:>10} Taken = {}", head, (*head).get_size(), (*head).is_taken());
+            head = (head as *mut u8).add((*head).get_size()) as *mut AllocList;
+        }
+    }
 }
