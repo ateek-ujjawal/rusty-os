@@ -1,7 +1,9 @@
 #![no_main]
 #![no_std]
 
-use core::{arch::{asm, global_asm}, panic::PanicInfo};
+use core::{arch::{asm, global_asm}, num, panic::PanicInfo};
+
+use page::Table;
 
 global_asm!(include_str!("asm/boot.S"));
 global_asm!(include_str!("asm/trap.S"));
@@ -142,6 +144,18 @@ fn kmain() {
 	}
 }
 
+pub fn id_map_range(root: &mut Table, start: usize, end: usize, bits: i64) {
+	let mut memaddr = start & !(page::PAGE_SIZE - 1); // Align starting address at 4kb page boundary
+	let num_kb_pages = (page::align_val(end, 12) - start) / page::PAGE_SIZE; // Get number of pages to allocate from memaddr
+
+	// Map 4kb pages starting from memaddr with amount as number_kb_pages
+	for _ in 0..num_kb_pages {
+		page::map(root, memaddr, memaddr, bits, 0);
+		memaddr += 1 << 12;
+	}
+}
+
 // OS Modules go here
 pub mod uart;
 pub mod page;
+pub mod kmem;
