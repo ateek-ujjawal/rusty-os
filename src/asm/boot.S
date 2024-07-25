@@ -1,7 +1,4 @@
-# boot.S
-# bootloader for SoS
-# Stephen Marz
-# 8 February 2019
+# Bootloader for the OS
 
 # Disable generation of compressed instructions.
 .option norvc
@@ -140,8 +137,7 @@ _start:
 
 4:
 	# wfi = wait for interrupt. This is a hint to the harts to shut everything needed
-	# down. However, the RISC-V specification allows for wfi to do nothing. Anyway,
-	# with QEMU, this will save some CPU!
+	# down. However, the RISC-V specification allows for wfi to do nothing.
 	wfi
 	j		4b
 
