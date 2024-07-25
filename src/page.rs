@@ -249,7 +249,17 @@ pub enum EntryBits {
 	User = 1 << 4,
 	Global = 1 << 5,
 	Access = 1 << 6,
-	Dirty = 1 << 7
+	Dirty = 1 << 7,
+
+	// Combination Entry bits
+	ReadWrite = 1 << 1 | 1 << 2,
+	ReadExecute = 1 << 1 | 1 << 3,
+	ReadWriteExecute = 1 << 1 | 1 << 2 | 1 << 3,
+
+	// Combination Entry bits for user
+	UserReadWrite = 1 << 1 | 1 << 2 | 1 << 4,
+	UserReadExecute = 1 << 1 | 1 << 3 | 1 << 4,
+	UserReadWriteExecute = 1 << 1 | 1 << 2 | 1 << 3 | 1 << 4
 }
 
 impl EntryBits {
@@ -391,7 +401,7 @@ pub fn unmap(root: &mut Table) {
 }
 
 // Walk through the page table by given virtual address
-pub fn virt_to_phys(root: &mut Table, vaddr: usize) -> Option<usize> {
+pub fn virt_to_phys(root: &Table, vaddr: usize) -> Option<usize> {
 	// Get virtual page numbers to walk through
 	let vpn = [
 		(vaddr >> 12) & 0x1ff,

@@ -1,7 +1,8 @@
 # Assembly-level trap handler
 
-.section .text
 .global asm_trap_vector
 
 asm_trap_vector:
-    mret
+    csrr a0, mtval
+    wfi
+    j   asm_trap_vector

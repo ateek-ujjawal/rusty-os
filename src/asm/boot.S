@@ -17,49 +17,64 @@ _start:
 # Disallow assembler from assuming gp is initialized, takes value from pc
 .option push
 .option norelax
-la  gp, _global_pointer
+    la  gp, _global_pointer
 .option pop
 
 # Make memory of BSS section as zero
-la  a0, _bss_start
-la  a1, _bss_end
-bgeu a0, a1, 2f
+    la  a0, _bss_start
+    la  a1, _bss_end
+    bgeu a0, a1, 2f
 
 1:
     sd  zero, (a0)
     addi a0, a0, 8
     bltu a0, a1, 1b
 2:
+    # This is for setting up CPU machine mode
+    # Control registers, set stack pointer, mstatus, mepc, mtvec, mie registers
+    # and return to main function
 
-# Control registers, set stack pointer, mstatus, mepc, mtvec, mie registers
-# and return to main function
+    # Stack grows from bottom to top, so start from _stack_end
+    la  sp, _stack_end
 
-# Stack grows from bottom to top, so start from _stack_end
-la  sp, _stack_end
+    # Set bits 11 and 12 to 11(machine mode)
+    li  t0, 0b11 << 11
+    csrw mstatus, t0
 
-# Set bits 11 and 12 to 11(machine mode), set bits 7(MPIE: Machine previous interrupt enable) to 1 and 3(MIE: Machine's interrupt enable) to 1 to enable interrupts
-li  t0, (0b11) << 11 | (1 << 7) | (1 << 3)
-csrw mstatus, t0
+    # Machine exception program counter, address to return to when returning from a trap, here it is kinit(defined by Rust)
+    la  t1, kinit
+    csrw mepc, t1
 
-# Machine exception program counter, address to return to when returning from a trap, here it is kmain(defined by Rust)
-la  t1, kmain
-csrw mepc, t1
+    # Do not allow interrupts while running kinit
+    csrw mie, zero
 
-# machine trap vector, kernel function to be called whenever there is a trap
-la  t2, asm_trap_vector
-csrw mtvec, t2
+    # Set return address to 2f after Rust's kinit function is over
+    la  ra, 2f
+    mret
 
-# enable some interrupts through the machine interrupt enable register
-# 1 << 3: Machine's M-mode software interrupt-enable bit
-# 1 << 7: Machine's M-mode timer interrupt-enable bit
-# 1 << 11: Machine's external interrupt-enable bit
+2:
+    # Rust will return here after kinit
+    # Set supervisor mode in mstatus(bits 11 and 12 = 01) and enable supervisor(bit 5) and machine(bit 7) interrupts
+    li  t0, (0b01 << 11) | (1 << 7) | (1 << 5)
+	csrw mstatus, t0
 
-li  t3, (1 << 3) | (1 << 7) | (1 << 11)
-csrw mie, t3
+    # Set supervisor trap vector to asm_trap_vector
+    la  t2, asm_trap_vector
+	csrw stvec, t2
 
-# Set return address to park after Rust's main function is over
-la  ra, 4f
-mret
+    # Set kmain as entry after mret
+	la  t1, kmain
+	csrw mepc, t1
+
+	# Setting mie (machine interrupt enable) register:
+	# This register takes the same bits as mideleg
+	# 1 << 1    : Supervisor software interrupt enable (SSIE=1 [Enabled])
+	# 1 << 5    : Supervisor timer interrupt enable (STIE=1 [Enabled])
+	# 1 << 9    : Supervisor external interrupt enable (SEIE=1 [Enabled])
+    li  t2, (1 << 1) | (1 << 5) | (1 << 9)
+	csrw mie, t2
+
+	mret
 
 3:
 

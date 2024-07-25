@@ -1,7 +1,7 @@
 // Sub-page level allocation system(byte-level allocator)
 // This file is used for allocating kernel memory only, not user space memory!
 
-use core::ptr::null_mut;
+use core::{alloc::{Layout, GlobalAlloc}, ptr::null_mut};
 
 use crate::page::{align_val, zalloc, Table, PAGE_SIZE};
 
@@ -192,4 +192,29 @@ pub fn print_kmem() {
             head = (head as *mut u8).add((*head).get_size()) as *mut AllocList;
         }
     }
+}
+
+// Define global allocator functions
+// A global allocator allows to allocate memory for core data structures
+// such as a linked list.
+// Since we use our own allocator, we implement the global allocator functions
+
+struct OsGlobalAllocator;
+
+unsafe impl GlobalAlloc for OsGlobalAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        kzmalloc(layout.size())
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
+        kfree(ptr)
+    }
+}
+
+#[global_allocator]
+static GA: OsGlobalAllocator = OsGlobalAllocator {};
+
+#[alloc_error_handler]
+pub fn alloc_error(l: Layout) -> ! {
+    panic!("Allocator failed to allocate {} bytes with {}-byte alignment!", l.size(), l.align());
 }
