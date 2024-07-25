@@ -92,12 +92,7 @@ impl Page {
 	}
 }
 
-/// Initialize the allocation system. There are several ways that we can
-/// implement the page allocator:
-/// 1. Free list (singly linked list where it starts at the first free
-/// allocation) 2. Bookkeeping list (structure contains a taken and length)
-/// 3. Allocate one Page structure per 4096 bytes (this is what I chose)
-/// 4. Others
+/// Initialize the allocation system.
 pub fn init() {
 	unsafe {
 		// let desc_per_page = PAGE_SIZE / size_of::<Page>();
@@ -138,7 +133,6 @@ pub fn alloc(pages: usize) -> *mut u8 {
 			// Check to see if this Page is free. If so, we have our
 			// first candidate memory address.
 			if (*ptr.add(i)).is_free() {
-				// It was FREE! Yay!
 				found = true;
 				for j in i..i + pages {
 					// Now check to see if we have a

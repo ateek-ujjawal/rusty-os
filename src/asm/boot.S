@@ -41,17 +41,22 @@ _start:
 	# The stack grows from bottom to top, so we put the stack pointer
 	# to the very end of the stack range.
 	la		sp, _stack_end
+
 	# Setting `mstatus` register:
 	# 0b01 << 11: Machine's previous protection mode is 2 (MPP=2).
 	li		t0, 0b11 << 11
 	csrw	mstatus, t0
+
 	# Do not allow interrupts while running kinit
 	csrw	mie, zero
+
 	# Machine's exception program counter (MEPC) is set to `kinit`.
 	la		t1, kinit
 	csrw	mepc, t1
+
 	# Set the return address to get us into supervisor mode
 	la		ra, 2f
+    
 	# We use mret here so that the mstatus register is properly updated.
 	mret
 2:
@@ -71,28 +76,26 @@ _start:
 	# with the previous bits.
 	li		t0, (0b01 << 11) | (1 << 7) | (1 << 5)
 	csrw	mstatus, t0
+
 	# Machine's trap vector base address is set to `m_trap_vector`, for
 	# "machine" trap vector.
 	la		t2, m_trap_vector
 	csrw	mtvec, t2
-	# Setting `stvec` (supervisor trap vector) register:
-	# Essentially this is a function pointer, but the last two bits can be 00 or 01
-	# 00        : All exceptions set pc to BASE
-	# 01        : Asynchronous interrupts set pc to BASE + 4 x scause
-	# la		t3, s_trap_vector
-	# csrw	stvec, t3
+
 	# Jump to kmain. We put the MPP = 01 for supervisor mode, so after
 	# mret, we will jump to kmain in supervisor mode.
 	la		t1, kmain
 	csrw	mepc, t1
-	# Setting `sie` (supervisor interrupt enable) register:
+
+	# Setting `mie` (supervisor interrupt enable) register:
 	# This register takes the same bits as mideleg
 	# 1 << 1    : Supervisor software interrupt enable (SSIE=1 [Enabled])
 	# 1 << 5    : Supervisor timer interrupt enable (STIE=1 [Enabled])
 	# 1 << 9    : Supervisor external interrupt enable (SEIE=1 [Enabled])
 	# 0xaaa = MEIP/SEIP and MTIP/STIP and MSIP/SSIP
-	li		t2, 0x888
+	li		t2, (1 << 1) | (1 << 5) | (1 << 9)
 	csrw	mie, t2
+
 	mret
 3:
 
@@ -115,23 +118,28 @@ _start:
 	# The parked harts will be put into machine mode with interrupts enabled.
 	li		t0, 0b11 << 11 | (1 << 7)
 	csrw	mstatus, t0
+
 	# Allow for MSIP (Software interrupt). We will write the MSIP from hart #0 to
 	# awaken these parked harts.
 	li		t3, (1 << 3)
 	csrw	mie, t3
+
 	# Machine's exception program counter (MEPC) is set to the Rust initialization
 	# code and waiting loop.
 	la		t1, kinit_hart
 	csrw	mepc, t1
+
 	# Machine's trap vector base address is set to `m_trap_vector`, for
 	# "machine" trap vector. The Rust initialization routines will give each
 	# hart its own trap frame. We can use the same trap function and distinguish
 	# between each hart by looking at the trap frame.
 	la		t2, m_trap_vector
 	csrw	mtvec, t2
+
 	# Whenever our hart is done initializing, we want it to return to the waiting
 	# loop, which is just below mret.
 	la		ra, 4f
+
 	# We use mret here so that the mstatus register is properly updated.
 	mret
 
