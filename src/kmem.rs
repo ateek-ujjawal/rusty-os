@@ -1,220 +1,268 @@
-// Sub-page level allocation system(byte-level allocator)
-// This file is used for allocating kernel memory only, not user space memory!
-
-use core::{alloc::{Layout, GlobalAlloc}, ptr::null_mut};
+// Byte level allocator
 
 use crate::page::{align_val, zalloc, Table, PAGE_SIZE};
+use core::{mem::size_of, ptr::null_mut};
 
 #[repr(usize)]
 enum AllocListFlags {
-    Taken = 1 << 63 // Rest of the bits for the size
+	Taken = 1 << 63,
 }
-
 impl AllocListFlags {
-    pub fn val(self) -> usize {
-        self as usize
-    }
+	pub fn val(self) -> usize {
+		self as usize
+	}
 }
 
-// Store the taken flag and remaining memory after this AllocList
+// Store flags and size of the allocated memory in the AllocList
 struct AllocList {
-    pub flags_and_size: usize
+	pub flags_size: usize,
 }
-
 impl AllocList {
-    pub fn is_taken(&self) -> bool {
-        self.flags_and_size & AllocListFlags::Taken.val() != 0
-    }
+	pub fn is_taken(&self) -> bool {
+		self.flags_size & AllocListFlags::Taken.val() != 0
+	}
 
-    pub fn is_free(&self) -> bool {
-        !self.is_taken()
-    }
+	pub fn is_free(&self) -> bool {
+		!self.is_taken()
+	}
 
-    pub fn set_taken(&mut self) {
-        self.flags_and_size |= AllocListFlags::Taken.val();
-    }
+	pub fn set_taken(&mut self) {
+		self.flags_size |= AllocListFlags::Taken.val();
+	}
 
-    pub fn set_free(&mut self) {
-        self.flags_and_size &= !AllocListFlags::Taken.val();
-    }
+	pub fn set_free(&mut self) {
+		self.flags_size &= !AllocListFlags::Taken.val();
+	}
 
-    pub fn set_size(&mut self, sz: usize) {
-        let k = self.is_taken();
-        self.flags_and_size = sz & !AllocListFlags::Taken.val();
-        if k {
-            self.set_taken();
-        }
-    }
+	pub fn set_size(&mut self, sz: usize) {
+		let k = self.is_taken();
+		self.flags_size = sz & !AllocListFlags::Taken.val();
+		if k {
+			self.flags_size |= AllocListFlags::Taken.val();
+		}
+	}
 
-    pub fn get_size(&self) -> usize {
-        self.flags_and_size & !AllocListFlags::Taken.val()
-    }
+	pub fn get_size(&self) -> usize {
+		self.flags_size & !AllocListFlags::Taken.val()
+	}
 }
 
-// We will start kernel memory allocations from here by searching for free memory
+// This is the head of the allocation. We start here when
+// we search for a free memory location.
 static mut KMEM_HEAD: *mut AllocList = null_mut();
-// Keep track of how much memory is allocated currently
+// Store number of allocated pages for the kernel
 static mut KMEM_ALLOC: usize = 0;
-// Keep track of where the kernel page table is
 static mut KMEM_PAGE_TABLE: *mut Table = null_mut();
 
-// Safe wrapper functions around unsafe operation
+// These functions are safe helpers around an unsafe
+// operation.
 pub fn get_head() -> *mut u8 {
-    unsafe { KMEM_HEAD as *mut u8 }
+	unsafe { KMEM_HEAD as *mut u8 }
 }
 
 pub fn get_page_table() -> *mut Table {
-    unsafe { KMEM_PAGE_TABLE as *mut Table }
+	unsafe { KMEM_PAGE_TABLE as *mut Table }
 }
 
 pub fn get_num_allocations() -> usize {
-    unsafe { KMEM_ALLOC }
+	unsafe { KMEM_ALLOC }
 }
 
-// Allocate memory for the kernel
-// Only need 64 pages for now
+/// Initialize kernel's memory
+/// This is not to be used to allocate memory
+/// for user processes. If that's the case, use
+/// alloc/dealloc from the page crate.
 pub fn init() {
-    unsafe {
-        let k_alloc = zalloc(64);
-        assert!(!k_alloc.is_null());
-        KMEM_ALLOC = 64;
-        KMEM_HEAD = k_alloc as *mut AllocList;
-        (*KMEM_HEAD).set_free();
-        (*KMEM_HEAD).set_size(KMEM_ALLOC * PAGE_SIZE);
-        KMEM_PAGE_TABLE = zalloc(1) as *mut Table;
-    }
+	unsafe {
+		// Allocate kernel pages (KMEM_ALLOC)
+		KMEM_ALLOC = 512;
+		let k_alloc = zalloc(KMEM_ALLOC);
+		assert!(!k_alloc.is_null());
+		KMEM_HEAD = k_alloc as *mut AllocList;
+		(*KMEM_HEAD).set_free();
+		(*KMEM_HEAD).set_size(KMEM_ALLOC * PAGE_SIZE);
+		KMEM_PAGE_TABLE = zalloc(1) as *mut Table;
+	}
 }
 
-// Byte allocation for kernel use
-pub fn kmalloc(sz: usize) -> *mut u8 {
-    unsafe {
-        // Align the size to byte boundary and add size of AllocList to be stored along with it
-        let size = align_val(sz, 3) + size_of::<AllocList>();
-
-        // Get the head and tail of the kernel memory
-        let mut head = KMEM_HEAD;
-        let tail = (head as *mut u8).add(KMEM_ALLOC * PAGE_SIZE) as *mut AllocList;
-
-        while head < tail {
-            // If free head/chunk is found, allocate it
-            if (*head).is_free() && size < (*head).get_size() {
-                let chunk_size = (*head).get_size();
-                let rem = chunk_size - size;
-                (*head).set_taken();
-                // If there is space for the AllocList, mark the remaining chunk as free for use
-                if rem > size_of::<AllocList>() {
-                    let next = (head as *mut u8).add(size) as *mut AllocList;
-                    (*next).set_free();
-                    (*next).set_size(rem);
-                    (*head).set_size(size);
-                } else {
-                    // Take the entirety of the remaining chunk
-                    (*head).set_size(chunk_size);
-                }
-                // Return the pointer after the alloc list
-                return head.add(1) as *mut u8;
-            } else {
-                // Get the next free chunk after this taken memory
-                head = (head as *mut u8).add((*head).get_size()) as *mut AllocList;
-            }
-        }
-    }
-    // If we reach here, we did not find any free chunk of kernel memory
-    null_mut()
-}
-
-// Zeroed out kernel memory allocation
+/// Allocate sub-page level allocation based on bytes and zero the memory
 pub fn kzmalloc(sz: usize) -> *mut u8 {
-    let size = align_val(sz, 3);
-    let ret = kmalloc(size);
+	let size = align_val(sz, 3);
+	let ret = kmalloc(size);
 
-    if !ret.is_null() {
-        for i in 0..size {
-            unsafe {
-                (*ret.add(i)) = 0;
-            }
-        }
-    }
-    ret
+	if !ret.is_null() {
+		for i in 0..size {
+			unsafe {
+				(*ret.add(i)) = 0;
+			}
+		}
+	}
+	ret
 }
 
-// Coalesce small freed memory chunks into bigger chunks to reduce fragmentation
-pub fn coalesce() {
-    unsafe {
-        let mut head = KMEM_HEAD;
-        let tail = (head as *mut u8).add(KMEM_ALLOC * PAGE_SIZE) as *mut AllocList;
+/// Allocate sub-page level allocation based on bytes
+pub fn kmalloc(sz: usize) -> *mut u8 {
+	unsafe {
+        // Size with byte boundary + size of the AllocList to be allocated
+		let size = align_val(sz, 3) + size_of::<AllocList>();
+		let mut head = KMEM_HEAD;
+        // End of kernel memory allocation
+		let tail = (KMEM_HEAD as *mut u8).add(KMEM_ALLOC * PAGE_SIZE)
+		           as *mut AllocList;
 
-        while head < tail {
-            let next = (head as *mut u8).add((*head).get_size()) as *mut AllocList;
-            if (*head).get_size() == 0 {
-                // Error, size can never be zero, heap must be messed up
-                // Break out of the loop
-                break;
-            } else if next >= tail {
-                // We might have moved past the tail
-                // In this case size is wrong
-                // Break out of the loop
-                break;
-            } else if (*head).is_free() && (*next).is_free() {
-                // Found adjacent free blocks of memory
-                // Coalesce them into one
-                (*head).set_size((*head).get_size() + (*next).get_size());
-            }
-            // Check for other free blocks by moving the head
-            head = (head as *mut u8).add((*head).get_size()) as *mut AllocList;
-        }
-    }
+		while head < tail {
+            // Check if head is free and size is less than the allocated memory for the kernel
+			if (*head).is_free() && size <= (*head).get_size() {
+				let chunk_size = (*head).get_size();
+				let rem = chunk_size - size;
+				(*head).set_taken();
+				if rem > size_of::<AllocList>() {
+					let next = (head as *mut u8).add(size)
+					           as *mut AllocList;
+					// There is space remaining here. Mark as free
+					(*next).set_free();
+					(*next).set_size(rem);
+					(*head).set_size(size);
+				}
+				else {
+					// If we get here, take the entire chunk
+					(*head).set_size(chunk_size);
+				}
+				return head.add(1) as *mut u8;
+			}
+			else {
+				// If we get here, what we saw wasn't a free
+				// chunk, move on to the next.
+				head = (head as *mut u8).add((*head).get_size())
+				       as *mut AllocList;
+			}
+		}
+	}
+	// If we get here, we didn't find any free chunks, no memory left
+	null_mut()
 }
 
-// Free the memory block pointed by this ptr
+/// Free a sub-page level allocation
 pub fn kfree(ptr: *mut u8) {
-    unsafe {
-        if !ptr.is_null() {
-            let p = (ptr as *mut AllocList).offset(-1);
-            if (*p).is_taken() {
-                (*p).set_free();
-            }
-
-            // After freeing the AllocList, check for adjacent free blocks
-            // and coalesce the memory
-            coalesce();
-        }
-    }
+	unsafe {
+		if !ptr.is_null() {
+			let p = (ptr as *mut AllocList).offset(-1);
+			if (*p).is_taken() {
+				(*p).set_free();
+			}
+			// After we free, see if we can combine adjacent free
+			// spots to see if we can reduce fragmentation.
+			coalesce();
+		}
+	}
 }
 
-// Print the kernel memory space
-pub fn print_kmem() {
-    unsafe {
-        let mut head = KMEM_HEAD;
-        let tail = (head as *mut u8).add(KMEM_ALLOC * PAGE_SIZE) as *mut AllocList;
-        while head < tail {
-            println!("{:p}: Length = {:>10} Taken = {}", head, (*head).get_size(), (*head).is_taken());
-            head = (head as *mut u8).add((*head).get_size()) as *mut AllocList;
-        }
-    }
+/// Merge smaller chunks into a bigger chunk
+pub fn coalesce() {
+	unsafe {
+		let mut head = KMEM_HEAD;
+		let tail = (KMEM_HEAD as *mut u8).add(KMEM_ALLOC * PAGE_SIZE)
+		           as *mut AllocList;
+
+		while head < tail {
+			let next = (head as *mut u8).add((*head).get_size())
+			           as *mut AllocList;
+			if (*head).get_size() == 0 {
+				// If this happens, then we have a bad heap
+				// (double free or something). However, that
+				// will cause an infinite loop since the next
+				// pointer will never move beyond the current
+				// location.
+				break;
+			}
+			else if next >= tail {
+				// We calculated the next by using the size
+				// given as get_size(), however this could push
+				// us past the tail. In that case, the size is
+				// wrong, hence we break and stop doing what we
+				// need to do.
+				break;
+			}
+			else if (*head).is_free() && (*next).is_free() {
+				// This means we have adjacent blocks needing to
+				// be freed. So, we combine them into one
+				// allocation.
+				(*head).set_size(
+				                 (*head).get_size()
+				                 + (*next).get_size(),
+				);
+			}
+			// If we get here, we might've moved. Recalculate new
+			// head.
+			head = (head as *mut u8).add((*head).get_size())
+			       as *mut AllocList;
+		}
+	}
 }
 
-// Define global allocator functions
-// A global allocator allows to allocate memory for core data structures
-// such as a linked list.
-// Since we use our own allocator, we implement the global allocator functions
+/// For debugging purposes, print the kmem table
+pub fn print_table() {
+	unsafe {
+		let mut head = KMEM_HEAD;
+		let tail = (KMEM_HEAD as *mut u8).add(KMEM_ALLOC * PAGE_SIZE)
+		           as *mut AllocList;
+		while head < tail {
+			println!(
+			         "{:p}: Length = {:<10} Taken = {}",
+			         head,
+			         (*head).get_size(),
+			         (*head).is_taken()
+			);
+			head = (head as *mut u8).add((*head).get_size())
+			       as *mut AllocList;
+		}
+	}
+}
 
-struct OsGlobalAllocator;
+// ///////////////////////////////////
+// / GLOBAL ALLOCATOR
+// ///////////////////////////////////
 
-unsafe impl GlobalAlloc for OsGlobalAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        kzmalloc(layout.size())
-    }
+// The global allocator allows us to use the data structures
+// in the core library, such as a linked list or B-tree.
+// We want to use these sparingly since we have a coarse-grained
+// allocator.
+use core::alloc::{GlobalAlloc, Layout};
 
-    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
-        kfree(ptr)
-    }
+// The global allocator is a static constant to a global allocator
+// structure. We don't need any members because we're using this
+// structure just to implement alloc and dealloc.
+struct OsGlobalAlloc;
+
+unsafe impl GlobalAlloc for OsGlobalAlloc {
+	unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+		// We align to the next page size so that when
+		// we divide by PAGE_SIZE, we get exactly the number
+		// of pages necessary.
+		kzmalloc(layout.size())
+	}
+
+	unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
+		// We ignore layout since our allocator uses ptr_start -> last
+		// to determine the span of an allocation.
+		kfree(ptr);
+	}
 }
 
 #[global_allocator]
-static GA: OsGlobalAllocator = OsGlobalAllocator {};
+/// Technically, we don't need the {} at the end, but it
+/// reveals that we're creating a new structure and not just
+/// copying a value.
+static GA: OsGlobalAlloc = OsGlobalAlloc {};
 
 #[alloc_error_handler]
+/// If for some reason alloc() in the global allocator gets null_mut(),
+/// then we come here. This is a divergent function, so we call panic to
+/// let the tester know what's going on.
 pub fn alloc_error(l: Layout) -> ! {
-    panic!("Allocator failed to allocate {} bytes with {}-byte alignment!", l.size(), l.align());
+	panic!(
+	       "Allocator failed to allocate {} bytes with {}-byte alignment.",
+	       l.size(),
+	       l.align()
+	);
 }

@@ -1,77 +1,82 @@
-#![no_main]
 #![no_std]
+#![no_main]
 #![feature(allocator_api,
            alloc_error_handler)]
 
-extern crate alloc;
-use alloc::{boxed::Box, string::String, vec};
-use core::{arch::{asm, global_asm}, panic::PanicInfo};
+use core::arch::{asm, global_asm};
 
 global_asm!(include_str!("asm/boot.S"));
 global_asm!(include_str!("asm/trap.S"));
 global_asm!(include_str!("asm/mem.S"));
 
-// Since the default print! macro prints to stdout, we need to make our own
-// To print write to the UART
+#[macro_use]
+extern crate alloc;
+use alloc::{boxed::Box, string::String};
+
+// ///////////////////////////////////
+// / RUST MACROS
+// ///////////////////////////////////
 #[macro_export]
 macro_rules! print
 {
-	// Tells rust to match the pattern given to print
-	// Use '$' as a meta-variable, use $args:tt to tell rust it is a token-tree argument
-	// Use '+' to tell there may be one or more match here, to compile need at least one argument
-	// Use => to tell rust what to run when a match is found
 	($($args:tt)+) => ({
-		use core::fmt::Write;
-		let _ = write!(crate::uart::Uart::new(0x1000_0000), $($args)+);
-	});
+			use core::fmt::Write;
+			let _ = write!(crate::uart::Uart::new(0x1000_0000), $($args)+);
+			});
 }
-
 #[macro_export]
 macro_rules! println
 {
 	() => ({
-		print!("\r\n")
-	});
+		   print!("\r\n")
+		   });
 	($fmt:expr) => ({
-		print!(concat!($fmt, "\r\n"))
-	});
+			print!(concat!($fmt, "\r\n"))
+			});
 	($fmt:expr, $($args:tt)+) => ({
-		print!(concat!($fmt, "\r\n"), $($args)+)
-	});
+			print!(concat!($fmt, "\r\n"), $($args)+)
+			});
 }
 
+// ///////////////////////////////////
+// / LANGUAGE STRUCTURES / FUNCTIONS
+// ///////////////////////////////////
+#[no_mangle]
+extern "C" fn eh_personality() {}
+
 #[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
-    print!("Aborting: ");
+fn panic(info: &core::panic::PanicInfo) -> ! {
+	print!("Aborting: ");
 	if let Some(p) = info.location() {
 		println!(
-					"line {}, file {}: {}",
-					p.line(),
-					p.file(),
-					info.message()
+		         "line {}, file {}: {}",
+		         p.line(),
+		         p.file(),
+		         info.message()
 		);
 	}
 	else {
 		println!("no information available.");
 	}
-
-    abort();
+	abort();
 }
-
-// Wait for interrupts(sleep cores), when calling panic handler
 #[no_mangle]
-extern "C"
-fn abort() -> ! {
+extern "C" fn abort() -> ! {
 	loop {
 		unsafe {
 			asm!("wfi");
 		}
 	}
-}	
+}
 
-// CONSTANTS
+// ///////////////////////////////////
+// / CONSTANTS
+// ///////////////////////////////////
 
-// Imported as symbols from asm/mem.S
+// The following symbols come from asm/mem.S. We can use
+// the symbols directly, but the address of the symbols
+// themselves are their values, which can cause issues.
+
 extern "C" {
 	static TEXT_START: usize;
 	static TEXT_END: usize;
@@ -85,161 +90,287 @@ extern "C" {
 	static KERNEL_STACK_END: usize;
 	static HEAP_START: usize;
 	static HEAP_SIZE: usize;
-	static mut KERNEL_TABLE: usize;
 }
+/// Identity map range
+/// Takes a contiguous allocation of memory and maps it using PAGE_SIZE
+/// This assumes that start <= end
+pub fn id_map_range(root: &mut page::Table,
+                    start: usize,
+                    end: usize,
+                    bits: i64)
+{
+	let mut memaddr = start & !(page::PAGE_SIZE - 1);
+	let num_kb_pages =
+		(page::align_val(end, 12) - memaddr) / page::PAGE_SIZE;
 
-// Identity map a range of addresses using MMU
-pub fn id_map_range(root: &mut page::Table, start: usize, end: usize, bits: i64) {
-	let mut memaddr = start & !(page::PAGE_SIZE - 1); // Align starting address at 4kb page boundary
-	let num_kb_pages = (page::align_val(end, 12) - start) / page::PAGE_SIZE; // Get number of pages to allocate from memaddr
-
-	// Map 4kb pages starting from memaddr with amount as number_kb_pages
 	for _ in 0..num_kb_pages {
 		page::map(root, memaddr, memaddr, bits, 0);
 		memaddr += 1 << 12;
 	}
 }
-
+// ///////////////////////////////////
+// / ENTRY POINT
+// ///////////////////////////////////
 #[no_mangle]
-// Kinit executes in mode 3 which is machine mode(MPP = 11)
-// The job of kinit is to setup the MMU and enter supervisor mode
-// This will layout the memory according to virtual addresses
 extern "C" fn kinit() {
-	// Init uart for debugging purposes
+	// We created kinit, which runs in machine mode(3)
+	// The job of kinit() is to get us into supervisor mode
+	// as soon as possible.
+	// Interrupts are disabled for the duration of kinit()
 	uart::Uart::new(0x1000_0000).init();
-	// Init paged memory and kernel memory
 	page::init();
 	kmem::init();
 
-	// Get address of root kernel page table and heap head
+	// Map heap allocations
 	let root_ptr = kmem::get_page_table();
 	let root_u = root_ptr as usize;
-	// Borrow the root table
-	let mut root = unsafe {
-		root_ptr.as_mut().unwrap()
-	};
+	let mut root = unsafe { root_ptr.as_mut().unwrap() };
 	let kheap_head = kmem::get_head() as usize;
 	let total_pages = kmem::get_num_allocations();
 	println!();
 	println!();
-
 	unsafe {
 		println!("TEXT:   0x{:x} -> 0x{:x}", TEXT_START, TEXT_END);
 		println!("RODATA: 0x{:x} -> 0x{:x}", RODATA_START, RODATA_END);
 		println!("DATA:   0x{:x} -> 0x{:x}", DATA_START, DATA_END);
 		println!("BSS:    0x{:x} -> 0x{:x}", BSS_START, BSS_END);
-		println!("STACK:  0x{:x} -> 0x{:x}", KERNEL_STACK_START, KERNEL_STACK_END);
-		println!("HEAP:   0x{:x} -> 0x{:x}", kheap_head, kheap_head + total_pages * 4096);
+		println!(
+		         "STACK:  0x{:x} -> 0x{:x}",
+		         KERNEL_STACK_START, KERNEL_STACK_END
+		);
+		println!(
+		         "HEAP:   0x{:x} -> 0x{:x}",
+		         kheap_head,
+		         kheap_head + total_pages * page::PAGE_SIZE
+		);
 	}
-
-	// Map the kernel heap virtual address
-	id_map_range(&mut root, kheap_head, kheap_head + total_pages * 4096, page::EntryBits::ReadWrite.val());
-
+	id_map_range(
+	             &mut root,
+	             kheap_head,
+	             kheap_head + total_pages * page::PAGE_SIZE,
+	             page::EntryBits::ReadWrite.val(),
+	);
+	// Using statics is inherently unsafe.
 	unsafe {
-		// Map the heap descriptors(for user space memory)
-		// and TEXT, RODATA, DATA, BSS, STACK sections
+		// Map heap descriptors
 		let num_pages = HEAP_SIZE / page::PAGE_SIZE;
-		id_map_range(&mut root, HEAP_START, HEAP_START + num_pages, page::EntryBits::ReadWrite.val());
-
-		id_map_range(&mut root, TEXT_START, TEXT_END, page::EntryBits::ReadExecute.val());
-
-		// Map the ROdata section
-		// In the linker rodata is put into the text section
-		// however it does not matter as long as it is read only
-		id_map_range(&mut root, RODATA_START, RODATA_END, page::EntryBits::ReadExecute.val());
-
-		id_map_range(&mut root, DATA_START, DATA_END, page::EntryBits::ReadWrite.val());
-
-		id_map_range(&mut root, BSS_START, BSS_END, page::EntryBits::ReadWrite.val());
-
-		id_map_range(&mut root, KERNEL_STACK_START, KERNEL_STACK_END, page::EntryBits::ReadWrite.val());
+		id_map_range(
+		             &mut root,
+		             HEAP_START,
+		             HEAP_START + num_pages,
+		             page::EntryBits::ReadWrite.val(),
+		);
+		// Map executable section
+		id_map_range(
+		             &mut root,
+		             TEXT_START,
+		             TEXT_END,
+		             page::EntryBits::ReadExecute.val(),
+		);
+		// Map rodata section
+		// We put the ROdata section into the text section, so they can
+		// potentially overlap however, we only care that it's read
+		// only.
+		id_map_range(
+		             &mut root,
+		             RODATA_START,
+		             RODATA_END,
+		             page::EntryBits::ReadExecute.val(),
+		);
+		// Map data section
+		id_map_range(
+		             &mut root,
+		             DATA_START,
+		             DATA_END,
+		             page::EntryBits::ReadWrite.val(),
+		);
+		// Map bss section
+		id_map_range(
+		             &mut root,
+		             BSS_START,
+		             BSS_END,
+		             page::EntryBits::ReadWrite.val(),
+		);
+		// Map kernel stack
+		id_map_range(
+		             &mut root,
+		             KERNEL_STACK_START,
+		             KERNEL_STACK_END,
+		             page::EntryBits::ReadWrite.val(),
+		);
 	}
 
-	// Map virtual addresses for the UART, CLINT and PLIC chips
 	// UART
-	page::map(&mut root, 0x1000_0000, 0x1000_0000, page::EntryBits::ReadWrite.val(), 0);
+	id_map_range(
+	             &mut root,
+	             0x1000_0000,
+	             0x1000_0100,
+	             page::EntryBits::ReadWrite.val(),
+	);
+
 	// CLINT
 	//  -> MSIP
-	page::map(&mut root, 0x0200_0000, 0x0200_0000, page::EntryBits::ReadWrite.val(), 0);
-	//  -> MTIMECMP
-	page::map(&mut root, 0x0200_b000, 0x0200_b000, page::EntryBits::ReadWrite.val(), 0);
-	//  -> MTIME
-	page::map(&mut root, 0x0200_c000, 0x0200_c000, page::EntryBits::ReadWrite.val(), 0);
+	id_map_range(
+	             &mut root,
+	             0x0200_0000,
+	             0x0200_ffff,
+	             page::EntryBits::ReadWrite.val(),
+	);
 	// PLIC
-	id_map_range(&mut root, 0x0c00_0000, 0x0c00_2000, page::EntryBits::ReadWrite.val());
-	id_map_range(&mut root, 0x0c20_0000, 0x0c20_8000, page::EntryBits::ReadWrite.val());
-
-	page::print_page_allocations();
-
-	// The following code shows how to convert a virtual address to a physical address
-	// When user applications see memory they only see virtual addresses, so we have to translate it to a physical address behind the scenes
-	let p = 0x8005_7000 as usize;
-	let m = page::virt_to_phys(&root, p).unwrap_or(0);
-	println!("Walk 0x{:x} = 0x{:x}", p, m);
-
+	id_map_range(
+	             &mut root,
+	             0x0c00_0000,
+	             0x0c00_2000,
+	             page::EntryBits::ReadWrite.val(),
+	);
+	id_map_range(
+	             &mut root,
+	             0x0c20_0000,
+	             0x0c20_8000,
+	             page::EntryBits::ReadWrite.val(),
+	);
+	// When we return from here, we'll go back to boot.S and switch into
+	// supervisor mode We will return the SATP register to be written when
+	// we return. root_u is the root page table's address. When stored into
+	// the SATP register, this is divided by 4 KiB (right shift by 12 bits).
+	// We enable the MMU by setting mode 8. Bits 63, 62, 61, 60 determine
+	// the mode.
+	// 0 = Bare (no translation)
+	// 8 = Sv39
+	// 9 = Sv48
+	// build_satp has these parameters: mode, asid, page table address.
+	let satp_value = cpu::build_satp(cpu::SatpMode::Sv39, 0, root_u);
 	unsafe {
-		// Store the root kernel page table in a constant, since it will keep changing
-		// when switching from supervisor to machine mode or clearing the satp
-		KERNEL_TABLE = root_u;
+		// We have to store the kernel's table. The tables will be moved
+		// back and forth between the kernel's table and user
+		// applicatons' tables. Note that we're writing the physical address
+		// of the trap frame.
+		cpu::mscratch_write(
+		                    (&mut cpu::KERNEL_TRAP_FRAME[0]
+		                     as *mut cpu::TrapFrame)
+		                    as usize,
+		);
+		cpu::sscratch_write(cpu::mscratch_read());
+		cpu::KERNEL_TRAP_FRAME[0].satp = satp_value;
+		// Move the stack pointer to the very bottom. The stack is
+		// actually in a non-mapped page. The stack is decrement-before
+		// push and increment after pop. Therefore, the stack will be
+		// allocated (decremented) before it is stored.
+		cpu::KERNEL_TRAP_FRAME[0].trap_stack =
+			page::zalloc(1).add(page::PAGE_SIZE);
+		id_map_range(
+		             &mut root,
+		             cpu::KERNEL_TRAP_FRAME[0].trap_stack
+		                                      .sub(page::PAGE_SIZE,)
+		             as usize,
+		             cpu::KERNEL_TRAP_FRAME[0].trap_stack as usize,
+		             page::EntryBits::ReadWrite.val(),
+		);
+		// The trap frame itself is stored in the mscratch register.
+		id_map_range(
+		             &mut root,
+		             cpu::mscratch_read(),
+		             cpu::mscratch_read()
+		             + core::mem::size_of::<cpu::TrapFrame,>(),
+		             page::EntryBits::ReadWrite.val(),
+		);
+		page::print_page_allocations();
+		let p = cpu::KERNEL_TRAP_FRAME[0].trap_stack as usize - 1;
+		let m = page::virt_to_phys(&root, p).unwrap_or(0);
+		println!("Walk 0x{:x} = 0x{:x}", p, m);
 	}
+	// Set the satp and sfence.vma for MMU 
+	println!("Setting 0x{:x}", satp_value);
+	println!("Scratch reg = 0x{:x}", cpu::mscratch_read());
+	cpu::satp_write(satp_value);
+	cpu::satp_fence_asid(0);
+}
 
-	// Write root page table into the satp register
-	// which is basically the mode(8 for Sv39) and the root kernel page table's address
-	// we will shift the address of the table by 12 bits to the right to fit in the satp correctly
-	// Also write the sfence.vma so the MMU always grabs a fresh copy of the tables instead of loading from cache
-	let root_ppn = root_u >> 12;
-	let satp_val = 8 << 60 | root_ppn;
+#[no_mangle]
+extern "C" fn kinit_hart(hartid: usize) {
+	// All non-0 harts initialize here.
 	unsafe {
-		asm!("csrw satp, {}", in(reg) satp_val);
-		asm!("sfence.vma zero, {}", in(reg) 0);
+		// We have to store the kernel's table. The tables will be moved
+		// back and forth between the kernel's table and user
+		// applicatons' tables.
+		cpu::mscratch_write(
+		                    (&mut cpu::KERNEL_TRAP_FRAME[hartid]
+		                     as *mut cpu::TrapFrame)
+		                    as usize,
+		);
+		// Copy the same mscratch over to the supervisor version of the
+		// same register.
+		cpu::sscratch_write(cpu::mscratch_read());
+		cpu::KERNEL_TRAP_FRAME[hartid].hartid = hartid;
 	}
 }
 
-// Enter Rust code here(kmain)
 #[no_mangle]
-extern "C"
-fn kmain() {
-	// kmain should be reached when supervisor mode is turned on by kinit
-	// Trap vector will be setup and MMU will be turned on
-	println!("Welcome to Rusty OS!");
+extern "C" fn kmain() {
+	// kmain() starts in supervisor mode. So, we should have the trap
+	// vector setup and the MMU turned on when we get here.
 
-	// Get a new pointer to the UART
+	// We initialized my_uart in machine mode under kinit for debugging
+	// prints, but this just grabs a pointer to it.
 	let mut my_uart = uart::Uart::new(0x1000_0000);
 
-	// Check if global allocator
-	// and virtual memory works as expected
-	{	
+	// Create a new scope so that we can test the global allocator and
+	// deallocator
+	{
+		// We have the global allocator, so let's see if that works!
 		let k = Box::<u32>::new(100);
-		println!("Boxed value: {}", *k);
-		kmem::print_kmem();
+		println!("Boxed value = {}", *k);
+		// The following comes from the Rust documentation:
+		// some bytes, in a vector
 		let sparkle_heart = vec![240, 159, 146, 150];
+		// We know these bytes are valid, so we'll use `unwrap()`.
+		// This will MOVE the vector.
 		let sparkle_heart = String::from_utf8(sparkle_heart).unwrap();
 		println!("String = {}", sparkle_heart);
+		println!("\n\nAllocations of a box, vector, and string");
+		kmem::print_table();
 	}
+	println!("\n\nEverything should now be free:");
+	kmem::print_table();
 
-	// Test if uart reading works
-	// Read user input from UART and write it to UART as well(MMIO UART)
+	unsafe {
+		// Set the next machine timer to fire.
+		let mtimecmp = 0x0200_4000 as *mut u64;
+		let mtime = 0x0200_bff8 as *const u64;
+		// The frequency given by QEMU is 10_000_000 Hz, so this sets
+		// the next interrupt to fire one second from now.
+		mtimecmp.write_volatile(mtime.read_volatile() + 10_000_000);
+	}
+	// If we get here, the Box, vec, and String should all be freed since
+	// they go out of scope. This calls their "Drop" trait.
+	// Now see if we can read stuff:
 	loop {
 		if let Some(c) = my_uart.get() {
 			match c {
 				8 => {
-					// 8 is a backspace, so go back, print a space, then go back again
+					// This is a backspace, so we
+					// essentially have to write a space and
+					// backup again:
 					print!("{} {}", 8 as char, 8 as char);
 				},
 				10 | 13 => {
-					// Newline/carriage return
+					// Newline or carriage-return
 					println!();
 				},
 				_ => {
-					// Print everything else normally
 					print!("{}", c as char);
-				}
+				},
 			}
 		}
 	}
 }
 
-// OS Modules go here
-pub mod uart;
-pub mod page;
+// ///////////////////////////////////
+// / RUST MODULES
+// ///////////////////////////////////
+
+pub mod cpu;
 pub mod kmem;
+pub mod page;
+pub mod trap;
+pub mod uart;
