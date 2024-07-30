@@ -92,9 +92,12 @@ _start:
 	# 1 << 1    : Supervisor software interrupt enable (SSIE=1 [Enabled])
 	# 1 << 5    : Supervisor timer interrupt enable (STIE=1 [Enabled])
 	# 1 << 9    : Supervisor external interrupt enable (SEIE=1 [Enabled])
-	# 0xaaa = MEIP/SEIP and MTIP/STIP and MSIP/SSIP
-	li		t2, (1 << 1) | (1 << 5) | (1 << 9)
+	# 1 << 11 	: Enable machine external interrupt enable
+	li		t2, (1 << 1) | (1 << 5) | (1 << 9) | (1 << 11)
 	csrw	mie, t2
+
+	# When hart is done, return to loop at 4f
+	la		ra, 4f
 
 	mret
 3:

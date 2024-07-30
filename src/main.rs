@@ -220,13 +220,13 @@ extern "C" fn kinit() {
 	id_map_range(
 	             &mut root,
 	             0x0c00_0000,
-	             0x0c00_2000,
+	             0x0c00_2001,
 	             page::EntryBits::ReadWrite.val(),
 	);
 	id_map_range(
 	             &mut root,
 	             0x0c20_0000,
-	             0x0c20_8000,
+	             0x0c20_8001,
 	             page::EntryBits::ReadWrite.val(),
 	);
 	// When we return from here, we'll go back to boot.S and switch into
@@ -261,18 +261,18 @@ extern "C" fn kinit() {
 		id_map_range(
 		             &mut root,
 		             cpu::KERNEL_TRAP_FRAME[0].trap_stack
-		                                      .sub(page::PAGE_SIZE,)
+		                                      .sub(page::PAGE_SIZE)
 		             as usize,
 		             cpu::KERNEL_TRAP_FRAME[0].trap_stack as usize,
-		             page::EntryBits::ReadWrite.val(),
+		             page::EntryBits::ReadWrite.val()
 		);
 		// The trap frame itself is stored in the mscratch register.
 		id_map_range(
 		             &mut root,
 		             cpu::mscratch_read(),
 		             cpu::mscratch_read()
-		             + core::mem::size_of::<cpu::TrapFrame,>(),
-		             page::EntryBits::ReadWrite.val(),
+		             + core::mem::size_of::<cpu::TrapFrame>(),
+		             page::EntryBits::ReadWrite.val()
 		);
 		page::print_page_allocations();
 		let p = cpu::KERNEL_TRAP_FRAME[0].trap_stack as usize - 1;
@@ -312,7 +312,7 @@ extern "C" fn kmain() {
 
 	// We initialized my_uart in machine mode under kinit for debugging
 	// prints, but this just grabs a pointer to it.
-	let mut my_uart = uart::Uart::new(0x1000_0000);
+	let mut _my_uart = uart::Uart::new(0x1000_0000);
 
 	// Create a new scope so that we can test the global allocator and
 	// deallocator
@@ -343,26 +343,14 @@ extern "C" fn kmain() {
 	}
 	// If we get here, the Box, vec, and String should all be freed since
 	// they go out of scope. This calls their "Drop" trait.
-	// Now see if we can read stuff:
-	loop {
-		if let Some(c) = my_uart.get() {
-			match c {
-				8 => {
-					// This is a backspace, so we
-					// essentially have to write a space and
-					// backup again:
-					print!("{} {}", 8 as char, 8 as char);
-				},
-				10 | 13 => {
-					// Newline or carriage-return
-					println!();
-				},
-				_ => {
-					print!("{}", c as char);
-				},
-			}
-		}
-	}
+
+	println!("Setting up interrupts and PLIC...");
+	// Lower threshold to 0 to allow all interrupts
+	plic::set_threshold(0);
+	// UART is interrupt id 10. Set it's priority as well
+	plic::enable(10);
+	plic::set_priority(10, 1);
+	println!("UART interrupts have been enabled...");
 }
 
 // ///////////////////////////////////
@@ -374,3 +362,4 @@ pub mod kmem;
 pub mod page;
 pub mod trap;
 pub mod uart;
+pub mod plic;

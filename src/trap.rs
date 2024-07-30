@@ -1,6 +1,6 @@
 // Trap handler
 
-use crate::cpu::TrapFrame;
+use crate::{cpu::TrapFrame, plic, uart};
 
 #[no_mangle]
 extern "C" fn m_trap(epc: usize, tval: usize, cause: usize, hart: usize, _status: usize, _frame: &TrapFrame) -> usize {
@@ -31,7 +31,41 @@ extern "C" fn m_trap(epc: usize, tval: usize, cause: usize, hart: usize, _status
             },
             11 => {
                 // Machine external interrupt
-                println!("Machine external interrupt CPU#{}", hart);
+                //println!("Machine external interrupt CPU#{}", hart);
+				// Check id of next interrupt in claim register
+				if let Some(interrupt) = plic::next() {
+					match interrupt {
+						10 => { 
+							// Interrupt 10 is the UART interrupt.
+							let mut my_uart = uart::Uart::new(0x1000_0000);
+							if let Some(c) = my_uart.get() {
+								match c {
+									8 => {
+										// This is a backspace, so we
+										// essentially have to write a space and
+										// backup again:
+										print!("{} {}", 8 as char, 8 as char);
+									},
+									10 | 13 => {
+										// Newline or carriage-return
+										println!();
+									},
+									_ => {
+										print!("{}", c as char);
+									},
+								}
+							}
+					
+						},
+						// Non-UART interrupts go here and do nothing.
+						_ => {
+							println!("Non-UART external interrupt: {}", interrupt);
+						}
+					}
+					// We've claimed it, so now say that we've handled it. This resets the interrupt pending
+					// and allows the UART to interrupt again.
+					plic::complete(interrupt);
+				}
             },
             _ => {
                 println!("Unhandled async trap CPU#{} -> {}", hart, cause_num);
