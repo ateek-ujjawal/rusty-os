@@ -92,7 +92,7 @@ _start:
 	# 1 << 1    : Supervisor software interrupt enable (SSIE=1 [Enabled])
 	# 1 << 5    : Supervisor timer interrupt enable (STIE=1 [Enabled])
 	# 1 << 9    : Supervisor external interrupt enable (SEIE=1 [Enabled])
-	# 1 << 11 	: Enable machine external interrupt enable
+	# 1 << 11 	: Enable machine external interrupt (MEIE = 1)
 	li		t2, (1 << 1) | (1 << 5) | (1 << 9) | (1 << 11)
 	csrw	mie, t2
 
