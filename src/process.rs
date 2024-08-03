@@ -2,12 +2,13 @@
 
 use alloc::collections::vec_deque::VecDeque;
 
-use crate::{cpu::{build_satp, mscratch_write, satp_fence_asid, satp_write, SatpMode, TrapFrame}, page::{alloc, dealloc, map, unmap, zalloc, EntryBits, Table, PAGE_SIZE}};
+use crate::{cpu::{build_satp, mscratch_write, satp_fence_asid, satp_write, SatpMode, TrapFrame},
+            page::{alloc, dealloc, map, unmap, zalloc, EntryBits, Table, PAGE_SIZE}};
 
 // Stack pages needed for each process
 const STACK_PAGES: usize = 2;
 // Stack virtual address that is seen by the user
-const STACK_ADDR: usize = 0xf_0000_0000;
+const STACK_ADDR: usize = 0x1_0000_0000;
 // All processes will have a defined starting point in virtual memory seen by the user.
 const PROCESS_STARTING_ADDR: usize = 0x2000_0000;
 
@@ -20,17 +21,31 @@ const PROCESS_STARTING_ADDR: usize = 0x2000_0000;
 // initializations must be at compile-time. We cannot allocate
 // a VecDeque at compile time, so we are somewhat forced to
 // do this.
-static mut PROCESS_LIST: Option<VecDeque<Process>> = None;
+pub static mut PROCESS_LIST: Option<VecDeque<Process>> = None;
 // We can search through the process list to get a new PID, but
 // it's probably easier and faster just to increase the pid:
 static mut NEXT_PID: u16 = 1;
+
+// Gets make_syscall function symbol from trap.S file
+extern "C" {
+	fn make_syscall(a: usize) -> usize;
+}
 
 // We will eventually move this function out of here, but its
 // job is just to take a slot in the process list.
 fn init_process() {
 	// We can't do much here until we have system calls because
 	// we're running in User space.
-	loop {}
+    let mut i: usize = 0;
+    loop {
+        i += 1;
+        if i > 70_000_000 {
+            unsafe { 
+                make_syscall(i);
+            }
+            i = 0;
+        }
+    }
 }
 
 // Add a process given a function address and then
@@ -64,15 +79,17 @@ pub fn add_process_default(pr: fn()) {
 pub fn init() -> usize {
 	unsafe {
         // Initialize Process list with a deque(double ended queue with a capacity of 5 processes)
-		PROCESS_LIST = Some(VecDeque::with_capacity(5));
+		PROCESS_LIST = Some(VecDeque::with_capacity(15));
         // Add the initial kernel process to the list and give it a process structure
 		add_process_default(init_process);
         // We transfer ownership of the PROCESS_LIST to ourselves then give it back using replace
         // This ensures that any other process using the PROCESS_LIST does not interfere with it
 		let pl = PROCESS_LIST.take().unwrap();
 		let p = pl.front().unwrap().frame;
+        // Get the program_counter address to jump to that function
+        let func_vaddr = pl.front().unwrap().program_counter;
         // Take the trap frame of the process and write it to the mscratch
-		let frame = &p as *const TrapFrame as usize;
+		let frame = p as *const TrapFrame as usize;
 		mscratch_write(frame);
         // Fill the satp register with the root page table of the init process
 		satp_write(build_satp(
@@ -84,9 +101,8 @@ pub fn init() -> usize {
 		satp_fence_asid(1);
 		// Put the process list back in the global.
 		PROCESS_LIST.replace(pl);
-		// Return the first instruction's address to execute.
-		// Since we use the MMU, all start here.
-		PROCESS_STARTING_ADDR
+		// Return the first instruction's address to execute from the program_counter variable
+		func_vaddr
 	}
 }
 
@@ -103,32 +119,59 @@ pub enum ProcessState {
 // root page table, process state and it's private data
 #[repr(C)]
 pub struct Process {
-    frame:              TrapFrame,
+    frame:              *mut TrapFrame,
     stack:              *mut u8,
     program_counter:    usize,
     pid:                u16,
     root:               *mut Table,
     state:              ProcessState,
-    data:               ProcessData
+    data:               ProcessData,
+    sleep_until:        usize
 }
 
 impl Process {
+    pub fn get_frame_address(&self) -> usize {
+        self.frame as usize
+    }
+
+    pub fn get_program_counter(&self) -> usize {
+        self.program_counter as usize
+    }
+
+    pub fn get_pid(&self) -> u16 {
+        self.pid
+    }
+
+    pub fn get_table_address(&self) -> usize {
+        self.root as usize
+    }
+
+    pub fn get_state(&self) -> &ProcessState {
+        &self.state
+    }
+
+    pub fn get_sleep_until(&self) -> usize {
+        self.sleep_until as usize
+    }
+
     // Create a new process with default conditions
     pub fn new_default(func: fn()) -> Self {
         let func_addr = func as usize;
-        let mut ret_proc = Process {
-            frame:          TrapFrame::zero(),
+        let func_vaddr = func_addr;
+        let ret_proc = Process {
+            frame:          zalloc(1) as *mut TrapFrame,
             stack:          alloc(STACK_PAGES),
             program_counter:PROCESS_STARTING_ADDR,
             pid:            unsafe { NEXT_PID },
             root:           zalloc(1) as *mut Table,
-            state:          ProcessState::Waiting,
-            data:           ProcessData::zero()
+            state:          ProcessState::Running,
+            data:           ProcessData::zero(),
+            sleep_until:    0
         };
         unsafe { NEXT_PID += 1; }
         // Move stack pointer to the bottom
         // According to the register specs, x2 register (2) is the stack pointer
-        ret_proc.frame.regs[2] = STACK_ADDR + (STACK_PAGES * PAGE_SIZE);
+        unsafe { (*ret_proc.frame).regs[2] = STACK_ADDR + (STACK_PAGES * PAGE_SIZE); }
         // Map stack on the MMU
         let pt;
         unsafe {
@@ -139,10 +182,17 @@ impl Process {
         for i in 0..STACK_PAGES {
             let addr = i * PAGE_SIZE;
             map(pt, STACK_ADDR + addr, saddr + addr, EntryBits::UserReadWrite.val(), 0);
+            println!("Set stack from 0x{:016x} -> 0x{:016x}", STACK_ADDR + addr, saddr + addr);
         }
-        // Map function pointer/program counter on the MMU
-        map(pt, PROCESS_STARTING_ADDR, func_addr, EntryBits::UserReadExecute.val(), 0);
-        map(pt, PROCESS_STARTING_ADDR + 0x1001, func_addr + 0x1001, EntryBits::UserReadExecute.val(), 0);
+
+        // Map function pointer to it's own virtual address on the MMU
+        for i in 0..=100 {
+            let modifier = i * 0x1000;
+            map(pt, func_vaddr + modifier, func_addr + modifier, EntryBits::UserReadWriteExecute.val(), 0);
+        }
+        
+        // Map the make_syscall function on the MMU
+        map(pt, 0x8000_0000, 0x8000_0000, EntryBits::UserReadExecute.val(), 0);
         // Return the newly created process structure
         ret_proc
     }

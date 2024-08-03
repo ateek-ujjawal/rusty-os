@@ -71,7 +71,7 @@ _start:
 	# Setting `mstatus` (supervisor status) register:
 	# 0b01 << 11 : Previous protection mode is 1 (MPP=01 [Supervisor]).
 	# 1 << 7     : Previous machine interrupt-enable bit is 1 (MPIE=1 [Enabled])
-	# 1 << 5     : Previous interrupt-enable bit is 1 (SPIE=1 [Enabled]).
+	# 1 << 5     : Previous supervisor interrupt-enable bit is 1 (SPIE=1 [Enabled]).
 	# We set the "previous" bits because the mret will write the current bits
 	# with the previous bits.
 	li		t0, (0b01 << 11) | (1 << 7) | (1 << 5)

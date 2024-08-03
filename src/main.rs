@@ -108,6 +108,12 @@ pub fn id_map_range(root: &mut page::Table,
 		memaddr += 1 << 12;
 	}
 }
+
+// Get the switch_to_user function from trap.S
+extern "C" {
+	fn switch_to_user(frame: usize, mepc: usize, satp: usize) -> !;
+}
+
 // ///////////////////////////////////
 // / ENTRY POINT
 // ///////////////////////////////////
@@ -314,6 +320,10 @@ extern "C" fn kmain() {
 	// prints, but this just grabs a pointer to it.
 	let mut _my_uart = uart::Uart::new(0x1000_0000);
 
+	// Initialize the init process used by the kernel
+	let ret = process::init();
+	println!("Init process created at address 0x{:08x}", ret);
+
 	// Create a new scope so that we can test the global allocator and
 	// deallocator
 	{
@@ -332,15 +342,6 @@ extern "C" fn kmain() {
 	}
 	println!("\n\nEverything should now be free:");
 	kmem::print_table();
-
-	unsafe {
-		// Set the next machine timer to fire.
-		let mtimecmp = 0x0200_4000 as *mut u64;
-		let mtime = 0x0200_bff8 as *const u64;
-		// The frequency given by QEMU is 10_000_000 Hz, so this sets
-		// the next interrupt to fire one second from now.
-		mtimecmp.write_volatile(mtime.read_volatile() + 10_000_000);
-	}
 	// If we get here, the Box, vec, and String should all be freed since
 	// they go out of scope. This calls their "Drop" trait.
 
@@ -351,6 +352,23 @@ extern "C" fn kmain() {
 	plic::enable(10);
 	plic::set_priority(10, 1);
 	println!("UART interrupts have been enabled...");
+
+	println!("Getting ready for first process.");
+	println!("Issuing the first context-switch timer.");
+	unsafe {
+		let mtimecmp = 0x0200_4000 as *mut u64;
+		let mtime = 0x0200_bff8 as *const u64;
+		// The frequency given by QEMU is 10_000_000 Hz, so this sets
+		// the next interrupt to fire one second from now.
+		mtimecmp.write_volatile(mtime.read_volatile() + 1_000_000);
+	}
+	let (frame, mepc, satp) = scheduler::schedule();
+	unsafe {
+		switch_to_user(frame, mepc, satp);
+	}
+	
+	// switch_to_user will not return, so we should never get here
+	println!("WE DIDN'T SCHEDULE?! THIS ISN'T RIGHT!");
 }
 
 // ///////////////////////////////////
@@ -364,3 +382,5 @@ pub mod trap;
 pub mod uart;
 pub mod plic;
 pub mod process;
+pub mod syscall;
+pub mod scheduler;

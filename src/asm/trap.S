@@ -72,8 +72,9 @@ m_trap_vector:
         csrr	a2, mcause
         csrr	a3, mhartid
         csrr	a4, mstatus
-        mv		a5, t5
-        ld		sp, 520(a5)
+        csrr	a5, mscratch
+        la      t0, KERNEL_STACK_END
+        ld		sp, 0(t0)
         call	m_trap
 
     # When we get here, we've returned from m_trap, restore registers
@@ -96,3 +97,45 @@ m_trap_vector:
     # the last one loaded t6 back to its original value.
 
 	mret
+
+.global switch_to_user
+switch_to_user:
+    # a0 - Frame address
+	# a1 - Program counter
+	# a2 - SATP Register
+    csrw    mscratch, a0
+
+	# 1 << 7 is MPIE
+	# Since user mode is 00, we don't need to set anything
+	# in MPP (bits 12:11). We set mpie = 1 and spie = 1
+	li		t0, 1 << 7 | 1 << 5
+	csrw	mstatus, t0
+	csrw	mepc, a1
+	csrw	satp, a2
+
+    # mie according to normal process
+	li		t1, 0xaaa
+	csrw	mie, t1
+	la		t2, m_trap_vector
+	csrw	mtvec, t2
+	# This fence forces the MMU to flush the TLB. However, since
+	# we're using the PID as the address space identifier, we might
+	# only need this when we create a process. Right now, this ensures
+	# correctness, however it isn't the most efficient.
+	sfence.vma
+	# A0 is the context frame, so we need to reload it back
+	# and mret so we can start running the program.
+	mv	t6, a0
+	.set	i, 1
+	.rept	31
+		load_gp %i, t6
+		.set	i, i+1
+	.endr
+	# j .
+    mret
+
+
+.global make_syscall
+make_syscall:
+	ecall
+	ret

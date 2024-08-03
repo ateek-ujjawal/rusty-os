@@ -1,9 +1,13 @@
 // Trap handler
 
-use crate::{cpu::TrapFrame, plic, uart};
+use crate::{cpu::TrapFrame, plic, scheduler::schedule, syscall::do_syscall, uart};
+
+extern "C" {
+	fn switch_to_user(frame: usize, mepc: usize, satp: usize) -> !;
+}
 
 #[no_mangle]
-extern "C" fn m_trap(epc: usize, tval: usize, cause: usize, hart: usize, _status: usize, _frame: &TrapFrame) -> usize {
+extern "C" fn m_trap(epc: usize, tval: usize, cause: usize, hart: usize, _status: usize, frame: *mut TrapFrame) -> usize {
     // Check if trap is asynchronous(1) or synchronous(0)
     let is_async = if (cause >> 63) & 1 == 1 {
         true
@@ -21,13 +25,15 @@ extern "C" fn m_trap(epc: usize, tval: usize, cause: usize, hart: usize, _status
                 // Machine software interrupt
                 println!("Machine software interrupt CPU#{}", hart);
             },
-            7 => {
-                // Machine timer interrupt
+            7 => unsafe {
+                // Context-switch timer, fires every 1 second to select a process and schedule it
+				let (frame, mepc, satp) = schedule();
                 let mtimecmp = 0x0200_4000 as *mut u64;
 				let mtime = 0x0200_bff8 as *const u64;
 				// The frequency given by QEMU is 10_000_000 Hz, so this sets
 				// the next interrupt to fire one second from now.
-				unsafe { mtimecmp.write_volatile(mtime.read_volatile() + 10_000_000) };
+				mtimecmp.write_volatile(mtime.read_volatile() + 10_000_000);
+				switch_to_user(frame, mepc, satp);
             },
             11 => {
                 // Machine external interrupt
@@ -76,16 +82,17 @@ extern "C" fn m_trap(epc: usize, tval: usize, cause: usize, hart: usize, _status
 			2 => {
 				// Illegal instruction
 				panic!("Illegal instruction CPU#{} -> 0x{:08x}: 0x{:08x}\n", hart, epc, tval);
+				while true {}
 			},
 			8 => {
 				// Environment (system) call from User mode
-				println!("E-call from User mode! CPU#{} -> 0x{:08x}", hart, epc);
-				return_pc += 4;
+				//println!("E-call from User mode! CPU#{} -> 0x{:08x}", hart, epc);
+				return_pc = do_syscall(return_pc, frame);
 			},
 			9 => {
 				// Environment (system) call from Supervisor mode
 				println!("E-call from Supervisor mode! CPU#{} -> 0x{:08x}", hart, epc);
-				return_pc += 4;
+				return_pc = do_syscall(return_pc, frame);
 			},
 			11 => {
 				// Environment (system) call from Machine mode
@@ -95,16 +102,19 @@ extern "C" fn m_trap(epc: usize, tval: usize, cause: usize, hart: usize, _status
 			12 => {
 				// Instruction page fault
 				println!("Instruction page fault CPU#{} -> 0x{:08x}: 0x{:08x}", hart, epc, tval);
+				while true {}
 				return_pc += 4;
 			},
 			13 => {
 				// Load page fault
 				println!("Load page fault CPU#{} -> 0x{:08x}: 0x{:08x}", hart, epc, tval);
+				while true {}
 				return_pc += 4;
 			},
 			15 => {
 				// Store page fault
 				println!("Store page fault CPU#{} -> 0x{:08x}: 0x{:08x}", hart, epc, tval);
+				while true {}
 				return_pc += 4;
 			},
 			_ => {
